@@ -52,6 +52,11 @@ export interface Issue {
   comments: IssueComment[];
   createdSeq: number;
   closedSeq: number | null;
+  /** Bumped on every mutation; keys the cached REST JSON body in domain.ts. */
+  version: number;
+  /** The cached serialized REST body for `version` (see issueJsonBody in domain.ts). */
+  jsonBody?: string;
+  jsonVersion?: number;
 }
 
 export interface PullRequest {
@@ -87,6 +92,18 @@ export interface Repo {
 }
 
 const TRIAL_NOW_FALLBACK = '2026-01-01T00:00:00Z';
+
+/** ISO-8601 for a whole-second epoch, cached: the forge mints many strings per second value. */
+const isoCache = new Map<number, string>();
+export function isoAtSec(epochSec: number): string {
+  let hit = isoCache.get(epochSec);
+  if (hit === undefined) {
+    hit = new Date(epochSec * 1000).toISOString().slice(0, -5) + 'Z';
+    if (isoCache.size > 4096) isoCache.clear();
+    isoCache.set(epochSec, hit);
+  }
+  return hit;
+}
 
 export class Forge {
   readonly repos = new Map<string, Repo>();

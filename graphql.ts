@@ -436,6 +436,7 @@ const SCHEMA: Record<string, TypeDef> = {
           if (issue.state !== 'closed') {
             issue.state = 'closed';
             issue.closedSeq = ctx.forge.tick();
+            issue.version += 1;
           }
           return { __typename: 'CloseIssuePayload', issue: { __typename: 'Issue', repo, issue }, clientMutationId: input.clientMutationId ?? null };
         },
@@ -476,7 +477,11 @@ const SCHEMA: Record<string, TypeDef> = {
           if (found === null || (found.__typename !== 'Issue' && found.__typename !== 'PullRequest')) throw new Error('subject not found');
           const body = typeof input.body === 'string' ? input.body : '';
           const comment = { id: ctx.forge.nextCommentId(), body, createdSeq: ctx.forge.tick() };
-          if (found.__typename === 'Issue') (found as { issue: Issue }).issue.comments.push(comment);
+          if (found.__typename === 'Issue') {
+            const target = (found as { issue: Issue }).issue;
+            target.comments.push(comment);
+            target.version += 1;
+          }
           return {
             __typename: 'AddCommentPayload',
             commentEdge: { __typename: 'IssueCommentEdge', node: { __typename: 'IssueComment', comment } },

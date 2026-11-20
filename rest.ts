@@ -10,6 +10,7 @@ import {
   createIssue,
   createPull,
   issueJson,
+  issueJsonBody,
   labelJson,
   mergePull,
   pullFiles,
@@ -24,7 +25,7 @@ import {
   walkCommits,
 } from './gitstore.ts';
 import { Forge, VIEWER, type Repo } from './store.ts';
-import { asObject, asString, paginate, parseJsonBody, readBody, sendEmpty, sendError, sendJson } from './web.ts';
+import { asObject, asString, paginate, parseJsonBody, readBody, sendEmpty, sendError, sendJson, sendRawJson } from './web.ts';
 
 const SCOPES = 'repo, user, admin:org';
 
@@ -104,6 +105,7 @@ export async function handleRest(forge: Forge, req: IncomingMessage, res: Server
 }
 
 function decodeSegment(part: string): string {
+  if (!part.includes('%')) return part;
   try {
     return decodeURIComponent(part);
   } catch {
@@ -506,9 +508,8 @@ async function handleIssues(
       else if (state === 'closed') issues = issues.filter((issue) => issue.state === 'closed');
       void sort;
       issues.sort((a, b) => (direction === 'asc' ? a.number - b.number : b.number - a.number));
-      const all = issues.map((issue) => issueJson(repo, issue));
-      const { page, headers } = paginate(all, url, req);
-      sendJson(res, 200, page, headers);
+      const { page, headers } = paginate(issues, url, req);
+      sendRawJson(res, 200, `[${page.map((issue) => issueJsonBody(repo, issue)).join(',')}]`, headers);
       return;
     }
     if (method === 'POST') {
@@ -519,7 +520,7 @@ async function handleIssues(
         sendError(res, created.status, created.message);
         return;
       }
-      sendJson(res, 201, issueJson(repo, created.issue));
+      sendRawJson(res, 201, issueJsonBody(repo, created.issue));
       return;
     }
   }
@@ -530,12 +531,15 @@ async function handleIssues(
 
   if (parts.length === 1 && issue !== undefined) {
     if (method === 'GET') {
-      sendJson(res, 200, issueJson(repo, issue));
+      sendRawJson(res, 200, issueJsonBody(repo, issue));
       return;
     }
     if (method === 'PATCH') {
       const body = await readJson(req, res);
       if (body === null) return;
+      // Anything below may mutate the issue (a 422 midway still leaves earlier writes
+      // applied), so invalidate its cached JSON body up front.
+      issue.version += 1;
       if (typeof body.title === 'string') issue.title = body.title;
       if (typeof body.body === 'string') issue.body = body.body;
       if (body.state === 'closed' && issue.state !== 'closed') {
@@ -575,6 +579,7 @@ async function handleIssues(
       if (body === null) return;
       const comment = { id: forge.nextCommentId(), body: asString(body.body), createdSeq: forge.tick() };
       comments.push(comment);
+      if (issue !== undefined) issue.version += 1;
       sendJson(res, 201, commentJson(repo, comment));
       return;
     }
@@ -591,6 +596,7 @@ async function handleIssues(
       }
       if (!issue.labels.includes(name)) issue.labels.push(name);
     }
+    issue.version += 1;
     sendJson(res, 200, issue.labels.map((name) => labelJson(repo, name)));
     return;
   }

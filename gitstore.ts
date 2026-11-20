@@ -239,7 +239,39 @@ export function commitAncestors(store: ObjectStore, tip: string): Set<string> {
 /** Whether `ancestor` is `descendant` itself or one of its ancestors. */
 export function isAncestor(store: ObjectStore, ancestor: string, descendant: string): boolean {
   if (ancestor === descendant) return true;
-  return commitAncestors(store, descendant).has(ancestor);
+  // Depth-first walk with early exit: the common case (a push whose old tip is the new
+  // commit's parent) resolves in one step instead of walking the whole ancestry.
+  const seen = new Set<string>();
+  const stack = [descendant];
+  while (stack.length > 0) {
+    const oid = stack.pop() as string;
+    if (seen.has(oid)) continue;
+    seen.add(oid);
+    const object = store.get(oid);
+    if (object === undefined || object.type !== 'commit') continue;
+    for (const parent of commitParents(object.data)) {
+      if (parent === ancestor) return true;
+      if (!seen.has(parent)) stack.push(parent);
+    }
+  }
+  return false;
+}
+
+/** The parent ids of a commit, read from its header lines only (no full decode). */
+export function commitParents(data: Buffer): string[] {
+  const parents: string[] = [];
+  let at = 0;
+  while (at < data.length) {
+    const nl = data.indexOf(0x0a, at);
+    const lineEnd = nl === -1 ? data.length : nl;
+    if (lineEnd === at) break;
+    if (lineEnd - at > 7 && data[at] === 0x70 && data.toString('latin1', at, at + 7) === 'parent ') {
+      parents.push(data.toString('ascii', at + 7, lineEnd).trim());
+    }
+    if (nl === -1) break;
+    at = nl + 1;
+  }
+  return parents;
 }
 
 /** A best common ancestor of two commits (the one with the shortest combined distance), or null. */
@@ -528,12 +560,23 @@ export function readPack(pack: Buffer, external?: ObjectStore): PackReadResult {
 
 /**
  * Inflate one zlib stream from the front of `buffer`, answering the data and how many input
- * bytes the stream consumed. Node's synchronous inflate does not report consumption, but it
- * throws on a truncated stream and ignores bytes past the stream's end, so success is
- * monotone in the prefix length and the smallest prefix that inflates is exactly the
- * stream: a binary search finds it in log2(n) inflations of a small entry.
+ * bytes the stream consumed. A single inflate with `info: true` reports the consumed input
+ * length on its engine (bytesWritten for an inflate is the compressed bytes it read), and it
+ * ignores bytes past the stream's end — one call instead of a search. The binary search
+ * below stays as a fallback for a runtime whose engine does not report it: success is
+ * monotone in the prefix length and the smallest prefix that inflates is exactly the stream.
  */
 function inflateWithLength(buffer: Buffer): { data: Buffer; consumed: number } {
+  try {
+    const result = inflateSync(buffer, { info: true }) as unknown as {
+      buffer: Buffer;
+      engine: { bytesWritten: number };
+    };
+    const consumed = result.engine?.bytesWritten ?? 0;
+    if (consumed > 0 && consumed <= buffer.length) return { data: result.buffer, consumed };
+  } catch {
+    // Fall through to the search.
+  }
   let lo = 1;
   let hi = buffer.length;
   let answer: { data: Buffer; consumed: number } | null = null;

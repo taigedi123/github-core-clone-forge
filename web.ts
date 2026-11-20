@@ -12,6 +12,11 @@ export function nextRequestId(): string {
 
 export function sendJson(res: ServerResponse, status: number, value: unknown, extraHeaders?: Record<string, string>): void {
   const body = JSON.stringify(value) ?? 'null';
+  sendRawJson(res, status, body, extraHeaders);
+}
+
+/** Send an already-serialized JSON body (the bytes are the caller's, unchanged). */
+export function sendRawJson(res: ServerResponse, status: number, body: string, extraHeaders?: Record<string, string>): void {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'x-github-request-id': nextRequestId(),
@@ -29,10 +34,16 @@ export function sendEmpty(res: ServerResponse, status: number): void {
   res.end();
 }
 
-export async function readBody(req: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  return Buffer.concat(chunks);
+export function readBody(req: IncomingMessage): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+    // A connection dropped mid-body never emits 'end': settle instead of hanging.
+    // (For a complete message 'close' follows 'end', so the resolve above already won.)
+    req.on('close', () => reject(new Error('request closed before its body completed')));
+  });
 }
 
 /** Parse a JSON request body; { ok: false } for malformed JSON (the 400 path). */

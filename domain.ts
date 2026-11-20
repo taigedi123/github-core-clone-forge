@@ -11,19 +11,21 @@ import {
   peelToCommit,
   treeFromFlat,
 } from './gitstore.ts';
-import { Forge, VIEWER, forgeAuthor, type Issue, type PullRequest, type Repo } from './store.ts';
+import { Forge, VIEWER, forgeAuthor, isoAtSec, type Issue, type PullRequest, type Repo } from './store.ts';
 
 export type Json = Record<string, unknown>;
 
+const USER_JSON: Json = {
+  login: VIEWER.login,
+  id: VIEWER.id,
+  type: VIEWER.type,
+  name: VIEWER.name,
+  email: VIEWER.email,
+  site_admin: false,
+};
+
 export function userJson(): Json {
-  return {
-    login: VIEWER.login,
-    id: VIEWER.id,
-    type: VIEWER.type,
-    name: VIEWER.name,
-    email: VIEWER.email,
-    site_admin: false,
-  };
+  return USER_JSON;
 }
 
 export function repoJson(repo: Repo): Json {
@@ -36,9 +38,9 @@ export function repoJson(repo: Repo): Json {
     owner: userJson(),
     description: repo.description,
     fork: false,
-    created_at: new Date(repo.createdSeq * 1000).toISOString().replace('.000Z', 'Z'),
-    updated_at: new Date(repo.createdSeq * 1000).toISOString().replace('.000Z', 'Z'),
-    pushed_at: new Date(repo.createdSeq * 1000).toISOString().replace('.000Z', 'Z'),
+    created_at: isoAtSec(repo.createdSeq),
+    updated_at: isoAtSec(repo.createdSeq),
+    pushed_at: isoAtSec(repo.createdSeq),
     default_branch: repo.defaultBranch,
     visibility: repo.private ? 'private' : 'public',
     has_issues: true,
@@ -99,11 +101,23 @@ export function issueJson(repo: Repo, issue: Issue): Json {
     user: userJson(),
     assignees: [],
     comments: issue.comments.length,
-    created_at: new Date(issue.createdSeq * 1000).toISOString().replace('.000Z', 'Z'),
-    updated_at: new Date(issue.createdSeq * 1000).toISOString().replace('.000Z', 'Z'),
-    closed_at: issue.closedSeq === null ? null : new Date(issue.closedSeq * 1000).toISOString().replace('.000Z', 'Z'),
+    created_at: isoAtSec(issue.createdSeq),
+    updated_at: isoAtSec(issue.createdSeq),
+    closed_at: issue.closedSeq === null ? null : isoAtSec(issue.closedSeq),
     pull_request: undefined,
   };
+}
+
+/**
+ * The serialized REST body of an issue, cached on the issue and rebuilt only when its
+ * version has moved (every mutation bumps it). Byte-identical to stringifying issueJson.
+ */
+export function issueJsonBody(repo: Repo, issue: Issue): string {
+  if (issue.jsonBody !== undefined && issue.jsonVersion === issue.version) return issue.jsonBody;
+  const body = JSON.stringify(issueJson(repo, issue)) ?? 'null';
+  issue.jsonBody = body;
+  issue.jsonVersion = issue.version;
+  return body;
 }
 
 export function commentJson(repo: Repo, comment: { id: number; body: string; createdSeq: number }): Json {
@@ -113,8 +127,8 @@ export function commentJson(repo: Repo, comment: { id: number; body: string; cre
     node_id: commentNodeId(comment.id),
     body: comment.body,
     user: userJson(),
-    created_at: new Date(comment.createdSeq * 1000).toISOString().replace('.000Z', 'Z'),
-    updated_at: new Date(comment.createdSeq * 1000).toISOString().replace('.000Z', 'Z'),
+    created_at: isoAtSec(comment.createdSeq),
+    updated_at: isoAtSec(comment.createdSeq),
   };
 }
 
@@ -148,10 +162,10 @@ export function pullJson(forge: Forge, repo: Repo, pull: PullRequest): Json {
       repo: repoJson(repo),
     },
     merged: pull.merged,
-    merged_at: pull.mergedSeq === null ? null : new Date(pull.mergedSeq * 1000).toISOString().replace('.000Z', 'Z'),
+    merged_at: pull.mergedSeq === null ? null : isoAtSec(pull.mergedSeq),
     merge_commit_sha: pull.mergeCommitSha,
-    created_at: new Date(pull.createdSeq * 1000).toISOString().replace('.000Z', 'Z'),
-    updated_at: new Date(pull.createdSeq * 1000).toISOString().replace('.000Z', 'Z'),
+    created_at: isoAtSec(pull.createdSeq),
+    updated_at: isoAtSec(pull.createdSeq),
     draft: false,
   };
 }
@@ -186,6 +200,7 @@ export function createIssue(forge: Forge, repo: Repo, input: { title?: unknown; 
     comments: [],
     createdSeq: forge.tick(),
     closedSeq: null,
+    version: 0,
   };
   repo.issues.set(number, issue);
   return { ok: true, issue };
